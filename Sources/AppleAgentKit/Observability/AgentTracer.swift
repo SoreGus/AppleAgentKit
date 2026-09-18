@@ -7,6 +7,7 @@
 
 public actor AgentTracer {
     public let configuration: AgentTraceConfiguration
+
     private let sinks: [any AgentTraceSink]
 
     public init(
@@ -15,6 +16,20 @@ public actor AgentTracer {
     ) {
         self.configuration = configuration
         self.sinks = sinks
+    }
+
+    public static func console(
+        configuration: AgentTraceConfiguration = .verbose,
+        label: String = "AppleAgentKit"
+    ) -> AgentTracer {
+        AgentTracer(
+            configuration: configuration,
+            sinks: [
+                ConsoleTraceSink(
+                    label: label
+                )
+            ]
+        )
     }
 
     public func traceConfiguration() -> AgentTraceConfiguration {
@@ -27,5 +42,20 @@ public actor AgentTracer {
         for sink in sinks {
             await sink.record(event)
         }
+    }
+
+    public func record(
+        error: any Error,
+        name: String? = nil,
+        metadata: [String: String] = [:]
+    ) async {
+        await record(
+            AgentTraceEvent(
+                kind: .error,
+                name: name,
+                message: error.localizedDescription,
+                metadata: metadata
+            )
+        )
     }
 }

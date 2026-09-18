@@ -25,4 +25,14 @@ public struct AgentTraceConfiguration: Sendable, Equatable {
         self.captureToolArguments = captureToolArguments
         self.captureToolOutputs = captureToolOutputs
     }
+
+    public static let metadataOnly = AgentTraceConfiguration()
+
+    public static let verbose = AgentTraceConfiguration(
+        capturePrompts: true,
+        captureResponses: true,
+        captureReasoning: true,
+        captureToolArguments: true,
+        captureToolOutputs: true
+    )
 }
