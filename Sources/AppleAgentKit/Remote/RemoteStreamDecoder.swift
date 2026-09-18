@@ -32,7 +32,9 @@ where Event: Decodable & Sendable {
             return nil
         }
 
-        let payload = line.dropFirst(5).trimmingCharacters(in: .whitespaces)
+        let payload = line.dropFirst(5).trimmingCharacters(
+            in: .whitespaces
+        )
 
         guard !payload.isEmpty,
               payload != "[DONE]",
@@ -40,6 +42,26 @@ where Event: Decodable & Sendable {
             return nil
         }
 
-        return try decoder.decode(Event.self, from: data)
+        do {
+            return try decoder.decode(
+                Event.self,
+                from: data
+            )
+        } catch {
+            let maximumCharacters = 2_048
+            let diagnosticPayload: String
+
+            if payload.count > maximumCharacters {
+                diagnosticPayload = String(
+                    payload.prefix(maximumCharacters)
+                ) + "… [truncated]"
+            } else {
+                diagnosticPayload = payload
+            }
+
+            throw RemoteError.decodingFailed(
+                "Unable to decode server-sent event. \(error.localizedDescription) Payload: \(diagnosticPayload)"
+            )
+        }
     }
 }

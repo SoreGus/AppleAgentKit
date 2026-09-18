@@ -5,6 +5,8 @@
 //  Created by Gustavo Soré on 18/09/26.
 //
 
+import Foundation
+
 public actor AgentTracer {
     public let configuration: AgentTraceConfiguration
 
@@ -49,13 +51,40 @@ public actor AgentTracer {
         name: String? = nil,
         metadata: [String: String] = [:]
     ) async {
+        var metadata = metadata
+        metadata["errorType"] = String(
+            reflecting: type(of: error)
+        )
+
         await record(
             AgentTraceEvent(
                 kind: .error,
                 name: name,
-                message: error.localizedDescription,
+                message: Self.errorMessage(error),
                 metadata: metadata
             )
         )
+    }
+}
+
+private extension AgentTracer {
+    static func errorMessage(
+        _ error: any Error
+    ) -> String {
+        if let localizedError = error as? any LocalizedError,
+           let description = localizedError.errorDescription,
+           !description.isEmpty {
+            return description
+        }
+
+        let description = String(
+            describing: error
+        )
+
+        if !description.isEmpty {
+            return description
+        }
+
+        return error.localizedDescription
     }
 }

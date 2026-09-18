@@ -7,7 +7,7 @@
 
 import Foundation
 
-public struct RemoteHTTPClientHandle: Hashable, @unchecked Sendable {
+public struct RemoteHTTPClientHandle: Hashable, Sendable {
     public let id: UUID
     public let client: any RemoteHTTPClient
 

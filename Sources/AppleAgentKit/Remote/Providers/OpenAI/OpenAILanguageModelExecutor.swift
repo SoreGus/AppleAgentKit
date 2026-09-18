@@ -33,7 +33,9 @@ public struct OpenAILanguageModelExecutor: LanguageModelExecutor {
         configuration: Configuration
     ) throws {
         guard !configuration.modelID.isEmpty else {
-            throw RemoteError.invalidRequest("OpenAI model ID cannot be empty.")
+            throw RemoteError.invalidRequest(
+                "OpenAI model ID cannot be empty."
+            )
         }
 
         self.configuration = configuration
@@ -57,7 +59,16 @@ public struct OpenAILanguageModelExecutor: LanguageModelExecutor {
             baseURL: configuration.baseURL
         )
 
-        let httpResponse = try await configuration.client.client.send(urlRequest)
+        let httpResponse: RemoteHTTPResponse
+
+        do {
+            httpResponse = try await configuration.client.client.send(
+                urlRequest
+            )
+        } catch {
+            throw Self.mapOpenAIError(error)
+        }
+
         let response: OpenAIResponse
 
         do {
@@ -66,7 +77,35 @@ public struct OpenAILanguageModelExecutor: LanguageModelExecutor {
                 from: httpResponse.data
             )
         } catch {
-            throw RemoteError.decodingFailed(error.localizedDescription)
+            let body = Self.responseBody(
+                from: httpResponse.data
+            )
+
+            throw RemoteError.decodingFailed(
+                "OpenAI response could not be decoded. \(error.localizedDescription)\(body.map { " Response: \($0)" } ?? "")"
+            )
+        }
+
+        if let providerError = response.error {
+            throw RemoteError.providerFailure(
+                RemoteProviderFailure(
+                    provider: "OpenAI",
+                    statusCode: httpResponse.response.statusCode,
+                    code: providerError.code,
+                    type: providerError.type,
+                    parameter: providerError.parameter,
+                    message: providerError.message,
+                    requestID: Self.requestID(
+                        from: httpResponse.response
+                    ),
+                    retryAfter: httpResponse.response.value(
+                        forHTTPHeaderField: "Retry-After"
+                    ),
+                    responseBody: Self.responseBody(
+                        from: httpResponse.data
+                    )
+                )
+            )
         }
 
         try await emit(
@@ -146,7 +185,69 @@ public struct OpenAILanguageModelExecutor: LanguageModelExecutor {
         }
 
         guard emittedContent else {
-            throw RemoteError.invalidResponse
+            let status = response.status.map { " Status: \($0)." } ?? ""
+
+            throw RemoteError.invalidResponseDetail(
+                "OpenAI response contained no text or function calls.\(status) Response ID: \(response.id)."
+            )
         }
+    }
+}
+
+private extension OpenAILanguageModelExecutor {
+    static func mapOpenAIError(
+        _ error: any Error
+    ) -> any Error {
+        guard let remoteError = error as? RemoteError,
+              case .httpFailure(let failure) = remoteError else {
+            return error
+        }
+
+        guard let body = failure.responseBody,
+              let data = body.data(using: .utf8),
+              let response = try? JSONDecoder().decode(
+                  OpenAIErrorResponse.self,
+                  from: data
+              ) else {
+            return error
+        }
+
+        return RemoteError.providerFailure(
+            RemoteProviderFailure(
+                provider: "OpenAI",
+                statusCode: failure.statusCode,
+                code: response.error.code,
+                type: response.error.type,
+                parameter: response.error.parameter,
+                message: response.error.message,
+                requestID: failure.requestID,
+                retryAfter: failure.retryAfter,
+                responseBody: failure.responseBody
+            )
+        )
+    }
+
+    static func requestID(
+        from response: HTTPURLResponse
+    ) -> String? {
+        response.value(forHTTPHeaderField: "x-request-id")
+            ?? response.value(forHTTPHeaderField: "request-id")
+    }
+
+    static func responseBody(
+        from data: Data
+    ) -> String? {
+        guard !data.isEmpty else {
+            return nil
+        }
+
+        let body = String(decoding: data, as: UTF8.self)
+        let maximumCharacters = 16_384
+
+        guard body.count > maximumCharacters else {
+            return body
+        }
+
+        return String(body.prefix(maximumCharacters)) + "… [truncated]"
     }
 }

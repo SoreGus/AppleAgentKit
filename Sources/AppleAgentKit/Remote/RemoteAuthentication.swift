@@ -35,11 +35,22 @@ public struct BearerTokenAuthentication: RemoteAuthentication {
     public func authenticate(
         _ request: URLRequest
     ) async throws -> URLRequest {
+        let token = token.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+
+        guard !token.isEmpty else {
+            throw RemoteError.authenticationFailed(
+                "Bearer token cannot be empty."
+            )
+        }
+
         var request = request
         request.setValue(
             "Bearer \(token)",
             forHTTPHeaderField: "Authorization"
         )
+
         return request
     }
 }

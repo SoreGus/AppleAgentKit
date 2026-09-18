@@ -52,6 +52,8 @@ internal struct OpenAIResponse: Decodable, Sendable {
     }
 
     let id: String
+    let status: String?
+    let error: OpenAIErrorDetail?
     let output: [Output]
     let usage: Usage?
 }
