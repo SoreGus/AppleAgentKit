@@ -109,12 +109,13 @@ private extension Transcript.ToolOutput {
             switch segment {
             case .text(let text):
                 text.content
+
             case .structure(let structure):
                 structure.content.jsonString
+
             case .attachment:
                 "[attachment]"
-            case .custom(let custom):
-                String(describing: custom)
+
             @unknown default:
                 nil
             }

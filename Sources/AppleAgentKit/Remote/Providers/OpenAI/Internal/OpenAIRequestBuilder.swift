@@ -163,12 +163,6 @@ internal enum OpenAIRequestBuilder {
                     )
                 }
 
-            case .custom(let custom):
-                content.append([
-                    "type": "input_text",
-                    "text": String(describing: custom)
-                ])
-
             @unknown default:
                 continue
             }
@@ -186,12 +180,13 @@ internal enum OpenAIRequestBuilder {
             switch segment {
             case .text(let text):
                 values.append(text.content)
+
             case .structure(let structure):
                 values.append(structure.content.jsonString)
+
             case .attachment:
                 values.append("[attachment]")
-            case .custom(let custom):
-                values.append(String(describing: custom))
+
             @unknown default:
                 continue
             }
