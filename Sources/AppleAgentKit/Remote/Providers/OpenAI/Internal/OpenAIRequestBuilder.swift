@@ -48,13 +48,16 @@ internal enum OpenAIRequestBuilder {
         if let schema = generationRequest.schema {
             let schemaData = try JSONEncoder().encode(schema)
             let schemaObject = try JSONSerialization.jsonObject(with: schemaData)
+            let normalizedSchema = try OpenAISchemaNormalizer.normalize(
+                schemaObject
+            )
 
             body["text"] = [
                 "format": [
                     "type": "json_schema",
                     "name": "foundation_models_response",
                     "strict": true,
-                    "schema": schemaObject
+                    "schema": normalizedSchema
                 ]
             ]
         }
@@ -200,12 +203,15 @@ internal enum OpenAIRequestBuilder {
     ) throws -> [String: Any] {
         let parametersData = try JSONEncoder().encode(definition.parameters)
         let parameters = try JSONSerialization.jsonObject(with: parametersData)
+        let normalizedParameters = try OpenAISchemaNormalizer.normalize(
+            parameters
+        )
 
         return [
             "type": "function",
             "name": definition.name,
             "description": definition.description,
-            "parameters": parameters,
+            "parameters": normalizedParameters,
             "strict": true
         ]
     }
