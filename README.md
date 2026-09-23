@@ -56,6 +56,49 @@ let session = LanguageModelSession(model: model)
 
 No AppleAgentKit wrapper is required.
 
+### Install a Core AI model from Hugging Face
+
+AppleAgentKit can resolve and install a controlled catalog of Core AI artifacts
+published on the Hugging Face Hub. Hugging Face is the artifact provider;
+`CoreAILanguageModel` remains responsible for loading and running the model.
+
+```swift
+import AppleAgentKit
+import CoreAILanguageModels
+
+let provider = try HuggingFaceModelProvider(
+    models: [
+        HuggingFaceModel(
+            id: "my-local-model",
+            displayName: "My Local Model",
+            repositoryID: "organization/core-ai-model",
+            revision: "main"
+        )
+    ]
+)
+
+let installation = try await provider.install(
+    "my-local-model"
+) { progress in
+    print(progress.fractionCompleted ?? 0)
+}
+
+let model = try await CoreAILanguageModel(
+    resourcesAt: installation.localURL
+)
+let session = LanguageModelSession(model: model)
+```
+
+The provider resolves branch or tag names to an exact commit, downloads into a
+staging location, validates the selected artifacts, and only then promotes the
+installation to persistent Application Support storage. Call
+`state(for:)`, `refreshedState(for:)`, `cancelInstallation(of:)`, or
+`removeModel(identifiedBy:)` to manage its lifecycle. The refreshed state also
+reports when the selected branch or tag resolves to a newer commit.
+
+See `Examples/HuggingFaceLocalModel.swift` for metadata lookup, progress,
+cancellation, loading, and removal.
+
 ## OpenAI model
 
 ```swift

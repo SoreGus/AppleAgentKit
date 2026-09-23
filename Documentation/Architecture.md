@@ -249,6 +249,53 @@ AppleAgentKit should not recreate:
 
 when Core AI / Foundation Models already provide those responsibilities.
 
+### 6.1 Local artifact providers
+
+A local artifact provider acquires and manages model resources. It is not a
+`LanguageModel` or a `LanguageModelExecutor`; inference remains the responsibility
+of Core AI.
+
+```text
+Local/
+├── LocalModel.swift
+├── LocalModelInstallation.swift
+├── LocalModelInstallationState.swift
+├── LocalModelDownloadProgress.swift
+├── LocalModelError.swift
+└── Providers/
+    └── HuggingFace/
+        ├── HuggingFaceModel.swift
+        ├── HuggingFaceModelProvider.swift
+        └── Internal/
+            └── HuggingFaceInstallationManifest.swift
+```
+
+`HuggingFaceModelProvider` accepts a controlled list of compatible models. Each
+entry carries a stable package-level identifier, a Hub repository ID, an optional
+revision, artifact filters, expected size, and runtime compatibility.
+
+The installation flow is:
+
+```text
+known model
+    → resolve repository revision to an exact commit
+    → inspect matching artifacts and logical size
+    → download to staging with progress and cancellation
+    → validate required artifacts
+    → write the installation manifest
+    → promote to persistent storage
+    → pass the installed URL to CoreAILanguageModel
+```
+
+Installations live under Application Support by default and are separated by
+model and commit. The Hugging Face SDK cache remains independently owned and is
+not deleted when AppleAgentKit removes an installation.
+
+The provider is an actor so installation tasks and progress state are safe to
+access concurrently. Network and cache behavior remain behind the provider API,
+allowing applications to supply a configured `HubClient` and evolve background
+transfer behavior without coupling it to model selection or inference.
+
 ---
 
 ## 7. Remote Models
