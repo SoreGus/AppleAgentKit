@@ -14,16 +14,20 @@ public actor HuggingFaceModelProvider {
 
   public nonisolated let models: [HuggingFaceModel]
   public nonisolated let storageDirectory: URL
+  public nonisolated let backgroundSessionIdentifier: String?
 
   private let modelsByID: [String: HuggingFaceModel]
   private let client: HubClient
+  private let downloadTransport: (any HuggingFaceModelDownloadTransport)?
   private var installationTasks: [String: Task<LocalModelInstallation, any Error>] = [:]
   private var progressByModelID: [String: LocalModelDownloadProgress] = [:]
 
   public init(
     models: [HuggingFaceModel],
     storageDirectory: URL = HuggingFaceModelProvider.defaultStorageDirectory,
-    client: HubClient = HubClient()
+    client: HubClient = HubClient(),
+    backgroundDownloadConfiguration: HuggingFaceBackgroundDownloadConfiguration? = .automatic,
+    downloadTransport: (any HuggingFaceModelDownloadTransport)? = nil
   ) throws {
     var modelsByID: [String: HuggingFaceModel] = [:]
 
@@ -41,6 +45,39 @@ public actor HuggingFaceModelProvider {
     self.modelsByID = modelsByID
     self.storageDirectory = storageDirectory
     self.client = client
+
+    if let downloadTransport {
+      self.downloadTransport = downloadTransport
+    } else if let backgroundDownloadConfiguration,
+      Bundle.main.bundleURL.pathExtension.lowercased() != "appex"
+    {
+      #if canImport(Darwin)
+        self.downloadTransport = URLSessionHuggingFaceBackgroundTransport(
+          storageDirectory: storageDirectory,
+          configuration: backgroundDownloadConfiguration
+        )
+      #else
+        self.downloadTransport = nil
+      #endif
+    } else {
+      self.downloadTransport = nil
+    }
+    self.backgroundSessionIdentifier = self.downloadTransport?.backgroundSessionIdentifier
+  }
+
+  /// Forwards events delivered to the app for a background URL session.
+  ///
+  /// Call this from the matching app-delegate lifecycle callback. It is safe to call before the
+  /// provider has been recreated after a relaunch.
+  @discardableResult
+  public nonisolated static func handleEvents(
+    forBackgroundURLSession identifier: String,
+    completionHandler: @escaping @Sendable () -> Void
+  ) -> Bool {
+    HuggingFaceBackgroundDownloadEvents.handleEvents(
+      forBackgroundURLSession: identifier,
+      completionHandler: completionHandler
+    )
   }
 
   public nonisolated static var defaultStorageDirectory: URL {
@@ -86,13 +123,34 @@ public actor HuggingFaceModelProvider {
       return .downloading(progress)
     }
 
+    let restoredDownload = HuggingFaceBackgroundDownloadStateStore.load(
+      modelID: id,
+      storageDirectory: storageDirectory
+    )
+
     do {
       guard let installation = try localInstallation(for: model) else {
+        if let restoredDownload {
+          return .downloading(restoredDownload.progress)
+        }
         return .notInstalled
+      }
+
+      if let restoredDownload {
+        guard restoredDownload.resolvedRevision == installation.resolvedRevision else {
+          return .downloading(restoredDownload.progress)
+        }
+        HuggingFaceBackgroundDownloadStateStore.remove(
+          modelID: id,
+          storageDirectory: storageDirectory
+        )
       }
 
       return .installed(installation)
     } catch {
+      if let restoredDownload {
+        return .downloading(restoredDownload.progress)
+      }
       return .invalid(error.localizedDescription)
     }
   }
@@ -159,11 +217,12 @@ public actor HuggingFaceModelProvider {
       await progressHandler(initialProgress)
     }
 
-    let task = Task { [client, storageDirectory] in
+    let task = Task { [client, storageDirectory, downloadTransport] in
       try await Self.performInstallation(
         of: model,
         existingInstallation: existingInstallation,
         client: client,
+        downloadTransport: downloadTransport,
         storageDirectory: storageDirectory,
         progressHandler: progressHandler,
         stateHandler: { progress in
@@ -186,6 +245,10 @@ public actor HuggingFaceModelProvider {
 
       installationTasks[id] = nil
       progressByModelID[id] = nil
+      HuggingFaceBackgroundDownloadStateStore.remove(
+        modelID: id,
+        storageDirectory: storageDirectory
+      )
       return installation
     } catch {
       installationTasks[id] = nil
@@ -201,9 +264,11 @@ public actor HuggingFaceModelProvider {
 
   public func cancelInstallation(
     of id: String
-  ) throws {
+  ) async throws {
     _ = try model(identifiedBy: id)
     installationTasks[id]?.cancel()
+    progressByModelID[id] = nil
+    await downloadTransport?.cancel(modelID: id)
   }
 
   public func removeModel(
@@ -217,6 +282,12 @@ public actor HuggingFaceModelProvider {
       installationTasks[id] = nil
       progressByModelID[id] = nil
     }
+
+    await downloadTransport?.cancel(modelID: id)
+    HuggingFaceBackgroundDownloadStateStore.remove(
+      modelID: id,
+      storageDirectory: storageDirectory
+    )
 
     let directory = modelDirectory(for: model)
 
@@ -428,6 +499,7 @@ extension HuggingFaceModelProvider {
     of model: HuggingFaceModel,
     existingInstallation: LocalModelInstallation?,
     client: HubClient,
+    downloadTransport: (any HuggingFaceModelDownloadTransport)?,
     storageDirectory: URL,
     progressHandler: ProgressHandler?,
     stateHandler:
@@ -481,69 +553,82 @@ extension HuggingFaceModelProvider {
       at: storageDirectory
     )
 
-    let stagingRoot =
-      storageDirectory
-      .appending(path: ".staging", directoryHint: .isDirectory)
-    let stagingDirectory = stagingRoot.appending(
-      path: UUID().uuidString,
-      directoryHint: .isDirectory
-    )
+    let downloadedDirectory: URL
 
-    do {
-      try fileManager.createDirectory(
-        at: stagingRoot,
-        withIntermediateDirectories: true
+    if let downloadTransport {
+      let request = HuggingFaceModelDownloadRequest(
+        modelID: model.id,
+        repositoryID: model.repositoryID,
+        resolvedRevision: information.resolvedRevision,
+        files: information.files,
+        host: client.host,
+        bearerToken: await client.bearerToken,
+        userAgent: client.userAgent
       )
-    } catch {
-      throw LocalModelError.fileSystemFailure(
-        error.localizedDescription
+      do {
+        downloadedDirectory = try await downloadTransport.download(request) { update in
+          await stateHandler(update)
+          if let progressHandler {
+            await progressHandler(update)
+          }
+        }
+      } catch is CancellationError {
+        throw CancellationError()
+      } catch {
+        if Task.isCancelled {
+          throw CancellationError()
+        }
+        throw LocalModelError.providerFailure(error.localizedDescription)
+      }
+    } else {
+      let stagingRoot = storageDirectory.appending(
+        path: ".staging",
+        directoryHint: .isDirectory
       )
+      let stagingDirectory = stagingRoot.appending(
+        path: UUID().uuidString,
+        directoryHint: .isDirectory
+      )
+      do {
+        try fileManager.createDirectory(
+          at: stagingRoot,
+          withIntermediateDirectories: true
+        )
+      } catch {
+        throw LocalModelError.fileSystemFailure(error.localizedDescription)
+      }
+      guard let repositoryID = Repo.ID(rawValue: model.repositoryID) else {
+        throw LocalModelError.invalidRepositoryID(model.repositoryID)
+      }
+      do {
+        downloadedDirectory = try await client.downloadSnapshot(
+          of: repositoryID,
+          to: stagingDirectory,
+          revision: information.resolvedRevision,
+          matching: model.matchingFiles,
+          progressHandler: { progress in
+            let total = progress.totalUnitCount > 0 ? progress.totalUnitCount : nil
+            let update = LocalModelDownloadProgress(
+              phase: .downloading,
+              receivedBytes: progress.completedUnitCount,
+              totalBytes: total
+            )
+            Task { await stateHandler(update) }
+            progressHandler?(update)
+          }
+        )
+      } catch is CancellationError {
+        throw CancellationError()
+      } catch {
+        if Task.isCancelled {
+          throw CancellationError()
+        }
+        throw LocalModelError.providerFailure(error.localizedDescription)
+      }
     }
 
     defer {
-      try? fileManager.removeItem(at: stagingDirectory)
-    }
-
-    guard let repositoryID = Repo.ID(rawValue: model.repositoryID) else {
-      throw LocalModelError.invalidRepositoryID(model.repositoryID)
-    }
-
-    let downloadedDirectory: URL
-
-    do {
-      downloadedDirectory = try await client.downloadSnapshot(
-        of: repositoryID,
-        to: stagingDirectory,
-        revision: information.resolvedRevision,
-        matching: model.matchingFiles,
-        progressHandler: { progress in
-          let total =
-            progress.totalUnitCount > 0
-            ? progress.totalUnitCount
-            : nil
-          let update = LocalModelDownloadProgress(
-            phase: .downloading,
-            receivedBytes: progress.completedUnitCount,
-            totalBytes: total
-          )
-
-          Task {
-            await stateHandler(update)
-          }
-
-          progressHandler?(update)
-        }
-      )
-    } catch is CancellationError {
-      throw CancellationError()
-    } catch {
-      if Task.isCancelled {
-        throw CancellationError()
-      }
-
-      throw LocalModelError.providerFailure(
-        error.localizedDescription
-      )
+      try? fileManager.removeItem(at: downloadedDirectory)
     }
 
     try Task.checkCancellation()
@@ -611,13 +696,16 @@ extension HuggingFaceModelProvider {
       )
 
       if fileManager.fileExists(atPath: finalDirectory.path) {
-        try fileManager.removeItem(at: finalDirectory)
+        _ = try fileManager.replaceItemAt(
+          finalDirectory,
+          withItemAt: downloadedDirectory
+        )
+      } else {
+        try fileManager.moveItem(
+          at: downloadedDirectory,
+          to: finalDirectory
+        )
       }
-
-      try fileManager.moveItem(
-        at: downloadedDirectory,
-        to: finalDirectory
-      )
 
       try manifestData.write(
         to: modelDirectory.appending(
@@ -722,7 +810,7 @@ extension HuggingFaceModelProvider {
     value.count == 40 && value.allSatisfy(\.isHexDigit)
   }
 
-  fileprivate static func fileSystemIdentifier(
+  internal static func fileSystemIdentifier(
     for value: String
   ) -> String {
     value.utf8.map {

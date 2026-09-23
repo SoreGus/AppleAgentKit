@@ -29,6 +29,10 @@ let package = Package(
                     package: "swift-huggingface"
                 )
             ]
+        ),
+        .testTarget(
+            name: "AppleAgentKitTests",
+            dependencies: ["AppleAgentKit"]
         )
     ]
 )

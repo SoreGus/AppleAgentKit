@@ -264,6 +264,7 @@ Local/
 ├── LocalModelError.swift
 └── Providers/
     └── HuggingFace/
+        ├── HuggingFaceBackgroundDownloadTransport.swift
         ├── HuggingFaceModel.swift
         ├── HuggingFaceModelProvider.swift
         └── Internal/
@@ -280,7 +281,8 @@ The installation flow is:
 known model
     → resolve repository revision to an exact commit
     → inspect matching artifacts and logical size
-    → download to staging with progress and cancellation
+    → persist transfer metadata by model ID
+    → download each artifact to staging with a background URLSession
     → validate required artifacts
     → write the installation manifest
     → promote to persistent storage
@@ -292,9 +294,18 @@ model and commit. The Hugging Face SDK cache remains independently owned and is
 not deleted when AppleAgentKit removes an installation.
 
 The provider is an actor so installation tasks and progress state are safe to
-access concurrently. Network and cache behavior remain behind the provider API,
-allowing applications to supply a configured `HubClient` and evolve background
-transfer behavior without coupling it to model selection or inference.
+access concurrently. On supported Apple platforms, a stable background session
+continues HTTP transfers while the app is suspended or terminated by the system.
+The app forwards Foundation's background-session lifecycle callback, while the
+provider reconstructs active tasks and progress from disk when it is recreated.
+Cancellation removes both the system tasks and resumable staging state.
+
+The persistent path uses the Hub's resolved HTTP artifact URLs. This covers
+classic Git LFS and Xet-backed repositories without depending on the process-bound
+Xet chunk downloader. The `swift-huggingface` snapshot/Xet implementation remains
+the foreground fallback. Network behavior remains injectable through
+`HuggingFaceModelDownloadTransport`, and callers can opt out by passing a `nil`
+background configuration.
 
 ---
 

@@ -96,6 +96,40 @@ installation to persistent Application Support storage. Call
 `removeModel(identifiedBy:)` to manage its lifecycle. The refreshed state also
 reports when the selected branch or tag resolves to a newer commit.
 
+On iOS and macOS, downloads use a persistent background `URLSession` by default.
+Its identifier is stable for the app and storage directory, and in-flight state
+is restored by model ID after relaunch. Forward the system callback from the app
+delegate so Foundation can finish reconnecting background events:
+
+```swift
+func application(
+    _ application: UIApplication,
+    handleEventsForBackgroundURLSession identifier: String,
+    completionHandler: @escaping () -> Void
+) {
+    _ = HuggingFaceModelProvider.handleEvents(
+        forBackgroundURLSession: identifier,
+        completionHandler: completionHandler
+    )
+}
+```
+
+After recreating the provider, call `install(_:)` for a restored model to await
+any remaining transfers and run validation and atomic promotion. `state(for:)`
+can be used first to restore the presentation without restarting the download.
+
+Pass `backgroundDownloadConfiguration: nil` to retain foreground-only snapshot
+downloads through `swift-huggingface`. A custom implementation of
+`HuggingFaceModelDownloadTransport` can also be injected for testing or another
+transfer backend.
+
+The persistent transport intentionally downloads each resolved artifact through
+the Hub `resolve` endpoint. This gives `URLSession` ownership of the HTTP transfer,
+including LFS and server-side Xet redirects. The native Xet downloader used by
+`swift-huggingface` remains available on the foreground path, but it cannot make
+its own chunk transfers persistent merely by wrapping `install()` in an app
+background task.
+
 See `Examples/HuggingFaceLocalModel.swift` for metadata lookup, progress,
 cancellation, loading, and removal.
 
