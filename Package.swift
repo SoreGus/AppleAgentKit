@@ -14,9 +14,21 @@ let package = Package(
             targets: ["AppleAgentKit"]
         )
     ],
+    dependencies: [
+        .package(
+            url: "https://github.com/huggingface/swift-huggingface.git",
+            from: "0.10.1"
+        )
+    ],
     targets: [
         .target(
-            name: "AppleAgentKit"
+            name: "AppleAgentKit",
+            dependencies: [
+                .product(
+                    name: "HuggingFace",
+                    package: "swift-huggingface"
+                )
+            ]
         )
     ]
 )
